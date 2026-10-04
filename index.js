@@ -192,7 +192,7 @@ function render() {
     setValue('budget', displayBudget);
     setValue('remaining', measured ? Math.max(0, displayBudget - usage) : undefined);
     setText(panel.querySelector('#ctt-details-title'), measured ? `${percent}% 사용` : `${mode} 사용량`);
-    setText(panel.querySelector('.ctt-headline-sub'), measured ? `추정 ${format(usage)} / ${format(displayBudget)} 토큰` : '');
+    setText(panel.querySelector('.ctt-headline-sub'), measured ? `${format(usage)} / ${format(displayBudget)} 토큰` : '');
     const status = !supported
         ? 'Chat Completion에서 사용할 수 있습니다.'
         : refreshError ? refreshError
