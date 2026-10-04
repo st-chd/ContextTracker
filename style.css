@@ -1,0 +1,132 @@
+#ctx-tracker-badge {
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    align-self: center;
+}
+
+#ctx-tracker-badge[hidden], #ctt-details[hidden] { display: none !important; }
+
+#ctx-tracker-badge .ctt-gauge {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--SmartThemeBodyColor, #ddd);
+    cursor: pointer;
+    touch-action: manipulation;
+}
+
+#ctx-tracker-badge .ctt-gauge:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
+#ctx-tracker-badge .ctt-gauge:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+#ctx-tracker-badge svg { width: 28px; height: 28px; transform: rotate(-90deg); }
+#ctx-tracker-badge circle { fill: none; stroke-width: 4; }
+#ctx-tracker-badge .ctt-ring-track { stroke: currentColor; opacity: .22; }
+#ctx-tracker-badge .ctt-ring-fill {
+    stroke: var(--SmartThemeQuoteColor, #aaa);
+    stroke-dasharray: 100;
+    stroke-dashoffset: 100;
+    transition: stroke-dashoffset .2s ease;
+}
+#ctx-tracker-badge[data-level="high"] .ctt-ring-fill { stroke: #d7b25d; }
+#ctx-tracker-badge[data-level="full"] .ctt-ring-fill { stroke: #e67878; }
+#ctx-tracker-badge[data-pending="true"] .ctt-ring-fill { opacity: .6; }
+
+#send_form:is([data-ctt-position="top-left"], [data-ctt-position="top-right"]) { position: relative; }
+#send_form > #ctx-tracker-badge {
+    position: absolute;
+    top: 8px;
+    z-index: 2;
+}
+#ctx-tracker-badge[data-position="top-left"] { left: 4px; }
+#ctx-tracker-badge[data-position="top-right"] { right: 4px; }
+
+/* GG도 없고 QR도 접혀 있으면 입력 행과 게이지 사이의 공간을 확보한다. */
+#send_form:is([data-ctt-position="top-left"], [data-ctt-position="top-right"]):not(:has(#gg-action-button-container)):not(:has(#qr--bar:not(.sqrbt-toggle_button-collapsed):not([hidden]))) > #nonQRFormItems {
+    margin-top: 36px;
+}
+#send_form:is([data-ctt-position="top-left"], [data-ctt-position="top-right"]) > #qr--bar:not(.sqrbt-toggle_button-collapsed) {
+    min-height: 36px;
+}
+
+/* 게이지가 기존 빠른 답장·GG 버튼 위에 겹치지 않도록 해당 가장자리만 비운다. */
+#send_form[data-ctt-position="top-right"] > :is(#gg-action-button-container, #qr--bar) {
+    padding-right: 36px;
+    box-sizing: border-box;
+}
+#send_form[data-ctt-position="top-left"] > :is(#gg-action-button-container, #qr--bar) {
+    padding-left: 36px;
+    box-sizing: border-box;
+}
+:is(#leftSendForm, #rightSendForm) > #ctx-tracker-badge {
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    opacity: 1;
+    order: -1;
+}
+
+#ctt-details {
+    --ctt-text: var(--SmartThemeBodyColor, #eee);
+    --ctt-border: rgba(128, 128, 128, .4);
+    position: fixed;
+    z-index: 10000;
+    width: min(calc(var(--mainFontSize, 15px) * 200 / 15), calc(100vw - 16px));
+    box-sizing: border-box;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 12px;
+    border: 1px solid var(--ctt-border);
+    border-radius: 10px;
+    background: var(--SmartThemeBlurTintColor, #242424);
+    -webkit-backdrop-filter: blur(calc(var(--SmartThemeBlurStrength, 10) * 1px));
+    backdrop-filter: blur(calc(var(--SmartThemeBlurStrength, 10) * 1px));
+    color: var(--ctt-text);
+    box-shadow: 0 5px 5px #0005;
+    font-family: var(--mainFontFamily, sans-serif);
+    font-size: calc(var(--mainFontSize, 15px) * 0.8);
+    line-height: 1.5;
+}
+
+@supports (color: color-mix(in srgb, red, blue)) {
+    #ctt-details { --ctt-border: color-mix(in srgb, var(--ctt-text) 20%, transparent); }
+}
+
+#ctt-details .ctt-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+#ctt-details .ctt-headline { display: flex; flex-direction: column; min-width: 0; }
+#ctt-details .ctt-headline strong { font-size: var(--mainFontSize, 15px); font-variant-numeric: tabular-nums; }
+#ctt-details .ctt-headline-sub { opacity: .75; font-variant-numeric: tabular-nums; }
+#ctt-details .ctt-headline-sub:empty { display: none; }
+#ctt-details .ctt-close {
+    width: calc(var(--mainFontSize, 15px) * 28 / 15);
+    height: calc(var(--mainFontSize, 15px) * 28 / 15);
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    font-size: calc(var(--mainFontSize, 15px) * 22 / 15);
+    line-height: 1;
+    cursor: pointer;
+}
+#ctt-details .ctt-close:hover { background: color-mix(in srgb, var(--ctt-text) 10%, transparent); }
+#ctt-details dl { margin: 8px 0 0; }
+#ctt-details dl > div { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 3px 0; }
+#ctt-details dt { min-width: 0; overflow-wrap: anywhere; }
+#ctt-details dd { margin: 0; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+#ctt-details .ctt-total { font-weight: 700; font-size: calc(var(--mainFontSize, 15px) * 13 / 15); }
+#ctt-details .ctt-totals > .ctt-total { border-bottom: 1px solid var(--ctt-border); padding-bottom: 8px; margin-bottom: 5px; }
+#ctt-details .ctt-status { margin: 10px 0 0; opacity: .75; font-size: calc(var(--mainFontSize, 15px) * 11 / 15); }
+#ctt-details .ctt-status:empty { display: none; }
+.context-tracker-settings .ctt-position-options { margin: 8px 0; padding: 6px; border: 1px solid var(--SmartThemeBorderColor); }
+.context-tracker-settings small { display: block; opacity: .75; margin-top: 6px; }
+.context-tracker-settings .ctt-history-notice:empty { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+    #ctx-tracker-badge .ctt-ring-fill { transition: none; }
+}
