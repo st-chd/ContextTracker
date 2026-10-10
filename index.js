@@ -1,4 +1,9 @@
 const MODULE = 'context_tracker';
+const USAGE_ROWS = [
+    ['prompts', '프롬프트'], ['worldInfoBefore', '월드 인포(before)'],
+    ['persona', '페르소나 시트'], ['character', '캐릭터 시트'],
+    ['definitions', '고급정의'], ['worldInfoAfter', '월드 인포(after)'], ['history', '챗 히스토리'],
+];
 
 let settings;
 let badge;
@@ -69,7 +74,8 @@ function trackAssembly() {
         const size = Math.max(0, Number(args[0]) || 0);
         const response = Math.max(0, Number(args[1]) || 0);
         completions.set(this, { revision: generationRevision, key: generationKey, type: generationType,
-            sequence: ++assemblySequence, size, response, budget: Math.max(0, size - response), error: '', counts: null });
+            sequence: ++assemblySequence, size, response, budget: Math.max(0, size - response), error: '', counts: null,
+            categories: promptCategories(), historyCount: null, breakdown: null });
         return original.apply(this, args);
     });
     // 본체는 실패한 조립도 finally에서 전달하고, render(false)에서 error를 지운다.
@@ -84,7 +90,12 @@ function trackAssembly() {
         const value = original.apply(this, args);
         const result = completions.get(args[0]);
         if (result) {
-            try { result.counts = { ...this.tokenHandler.getCounts() }; }
+            try {
+                result.counts = { ...this.tokenHandler.getCounts() };
+                const messages = args[0].getMessages();
+                result.breakdown = usageBreakdown(result.counts, result.categories, messages);
+                result.historyCount = includedHistoryCount(messages);
+            }
             catch { result.error ||= '토큰 집계를 사용할 수 없습니다. SillyTavern 버전 호환성을 확인하세요.'; }
         }
         return value;
@@ -95,6 +106,66 @@ function trackAssembly() {
         if (result && Array.isArray(chat)) promptResults.set(chat, result);
         return chat;
     });
+}
+
+function promptCategories(ctx = context()) {
+    const categories = new Map();
+    for (const prompt of ctx.chatCompletionSettings?.prompts ?? []) {
+        const content = String(prompt.content ?? '');
+        const macros = [...content.matchAll(/\{\{([^{}]*)\}\}/g)];
+        if (macros.length !== 1) continue;
+        const surrounding = content.replace(macros[0][0], '');
+        if (surrounding.includes('{{') || surrounding.includes('}}')) continue;
+        const name = macros[0][1].trim().toLowerCase();
+        const category = name === 'persona' ? 'persona'
+            : ['description', 'chardescription'].includes(name) ? 'character'
+                : ['personality', 'charpersonality', 'scenario', 'mesexamples', 'mesexamplesraw'].includes(name) ? 'definitions' : null;
+        if (category) categories.set(prompt.identifier, category);
+    }
+    return categories;
+}
+
+function usageCategory(id, categories) {
+    if (id === 'chatHistory') return 'history';
+    if (id === 'worldInfoBefore' || id === 'worldInfoAfter') return id;
+    if (id === 'personaDescription') return 'persona';
+    if (id === 'charDescription') return 'character';
+    if (['charPersonality', 'scenario', 'dialogueExamples'].includes(id)) return 'definitions';
+    return categories.get(id) ?? 'prompts';
+}
+
+function usageBreakdown(counts, categories, messages) {
+    const breakdown = Object.fromEntries(USAGE_ROWS.map(([key]) => [key, 0]));
+    const collections = messages?.getCollection?.() ?? [];
+    for (const [id, value] of Object.entries(counts)) {
+        const tokens = Number(value);
+        if (id === 'undefined' || !Number.isFinite(tokens) || tokens <= 0) continue;
+        const category = usageCategory(id, categories);
+        const collection = collections.find(item => item?.identifier === id);
+        // main 안에 삽입된 별도 프롬프트도 원래 식별자로 분류하고 중복 합산하지 않는다.
+        if (category === 'prompts' && collection?.flatten) {
+            let classified = 0;
+            for (const message of collection.flatten()) {
+                const amount = Number(message.getTokens());
+                if (!Number.isFinite(amount) || amount <= 0) continue;
+                breakdown[usageCategory(message.identifier, categories)] += amount;
+                classified += amount;
+            }
+            breakdown.prompts += tokens - classified;
+        } else breakdown[category] += tokens;
+    }
+    return breakdown;
+}
+
+function includedHistoryCount(messages) {
+    if (typeof messages?.flatten !== 'function') return null;
+    const identifiers = new Set();
+    for (const message of messages.flatten()) {
+        if (!message.content && !message.tool_calls) continue;
+        const match = /^(?:toolCall-)?chatHistory-(\d+)$/.exec(message.identifier);
+        if (match) identifiers.add(match[1]);
+    }
+    return identifiers.size;
 }
 
 function context() {
@@ -184,13 +255,20 @@ function render() {
         ? `${mode} ${percent}% 사용 · 추정 ${format(usage)} / ${format(displayBudget)} 토큰`
         : `${mode} 사용량`;
     setAttribute(button, 'aria-label', `${description}, 세부 내역 열기`);
-    setText(panel.querySelector('[data-ctt-label="total"]'), settings.historyOnly ? '챗 히스토리' : '총 토큰');
+    const historyLabel = `챗 히스토리(${current?.historyCount == null ? '—' : format(current.historyCount)}개)`;
+    setText(panel.querySelector('[data-ctt-label="total"]'), settings.historyOnly ? historyLabel : '총 토큰');
     setText(panel.querySelector('[data-ctt-label="budget"]'), settings.historyOnly ? '히스토리 예산' : '입력 예산');
+    panel.querySelector('[data-ctt-row="size"]').hidden = settings.historyOnly;
+    panel.querySelector('[data-ctt-row="response"]').hidden = settings.historyOnly;
+    panel.querySelector('[data-ctt-row="inputBudget"]').hidden = !settings.historyOnly;
+    panel.querySelector('.ctt-usage-details').hidden = !settings.showUsageDetails;
     setValue('total', usage);
     setValue('size', size);
     setValue('response', response);
     setValue('budget', displayBudget);
+    setValue('inputBudget', budget);
     setValue('remaining', measured ? Math.max(0, displayBudget - usage) : undefined);
+    for (const [key] of USAGE_ROWS) setValue(`usage-${key}`, current?.breakdown?.[key]);
     setText(panel.querySelector('#ctt-details-title'), measured ? `${percent}% 사용` : `${mode} 사용량`);
     setText(panel.querySelector('.ctt-headline-sub'), measured ? `${format(usage)} / ${format(displayBudget)} 토큰` : '');
     const status = !supported
@@ -263,7 +341,9 @@ function capturePrompt(data, dryRun) {
     }
     // 실제 생성은 변경 전 입력도 표시하되, 새 드라이런 결과와 구분한다.
     const captured = result ?? limits(ctx);
-    snapshot = { key: chatKey(ctx), total, history, revision: result?.revision ?? generationRevision,
+    snapshot = { key: chatKey(ctx), total, history, historyCount: result?.historyCount ?? null,
+        breakdown: result?.breakdown ?? usageBreakdown(counts, result?.categories ?? promptCategories(ctx)),
+        revision: result?.revision ?? generationRevision,
         size: captured.size, response: captured.response, budget: captured.budget,
         sequence: result?.sequence ?? 0, dryRun: Boolean(dryRun), source: result?.counts != null ? 'assembly' : 'global' };
     refreshPending = false;
@@ -414,10 +494,14 @@ function buildUI() {
         <button type="button" class="ctt-close" aria-label="세부 패널 닫기">×</button></div>
         <dl class="ctt-totals">
             <div class="ctt-total"><dt data-ctt-label="total">총 토큰</dt><dd data-ctt="total">—</dd></div>
-            <div><dt>컨텍스트 크기</dt><dd data-ctt="size">—</dd></div>
-            <div><dt>최대 응답 길이</dt><dd data-ctt="response">—</dd></div>
+            <div data-ctt-row="size"><dt>컨텍스트 크기</dt><dd data-ctt="size">—</dd></div>
+            <div data-ctt-row="response"><dt>최대 응답 길이</dt><dd data-ctt="response">—</dd></div>
+            <div data-ctt-row="inputBudget" hidden><dt>입력 예산</dt><dd data-ctt="inputBudget">—</dd></div>
             <div><dt data-ctt-label="budget">입력 예산</dt><dd data-ctt="budget">—</dd></div>
             <div><dt>잔여량</dt><dd data-ctt="remaining">—</dd></div>
+        </dl>
+        <dl class="ctt-usage-details" hidden>
+            ${USAGE_ROWS.map(([key, label]) => `<div><dt>${label}</dt><dd data-ctt="usage-${key}">—</dd></div>`).join('')}
         </dl>
         <p class="ctt-status" role="status"></p>`;
     document.body.append(panel);
@@ -471,11 +555,19 @@ function addSettingsPanel() {
             <input type="number" id="ctt_history_budget" class="text_pole" min="1" step="1" aria-describedby="ctt-history-limit ctt-history-notice">
             <small id="ctt-history-limit" class="ctt-history-limit"></small>
             <small id="ctt-history-notice" class="ctt-history-notice" role="status"></small>
+            <label class="checkbox_label"><input type="checkbox" id="ctt_usage_details"><span>사용량 상세보기</span></label>
             <fieldset class="ctt-position-options"><legend>게이지 위치</legend>
                 ${[['top-left', '좌측 상단'], ['top-right', '우측 상단 (기본값)'], ['send-left', '입력 영역 좌측'], ['send-buttons', '입력 영역 우측']].map(([value, label]) => `<label class="checkbox_label"><input type="radio" name="ctt_position" value="${value}"><span>${label}</span></label>`).join('')}
             </fieldset>
         </div></div>`;
     target.append(container);
+    const usageDetails = container.querySelector('#ctt_usage_details');
+    usageDetails.checked = settings.showUsageDetails;
+    usageDetails.addEventListener('change', () => {
+        settings.showUsageDetails = usageDetails.checked;
+        context().saveSettingsDebounced();
+        render();
+    }, { signal: listeners.signal });
     const historyOnly = container.querySelector('#ctt_history_only');
     const historyInput = container.querySelector('#ctt_history_budget');
     historyOnly.checked = settings.historyOnly;
@@ -639,6 +731,7 @@ jQuery(async () => {
         settings = store[MODULE] ??= {};
         if (typeof settings.enabled !== 'boolean') settings.enabled = true;
         if (typeof settings.historyOnly !== 'boolean') settings.historyOnly = false;
+        if (typeof settings.showUsageDetails !== 'boolean') settings.showUsageDetails = false;
         settings.historyBudget = historyBudget(settings.historyBudget, 0);
         if (!['top-left', 'top-right', 'send-left', 'send-buttons'].includes(settings.position)) settings.position = 'top-right';
         active = true;
