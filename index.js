@@ -75,7 +75,7 @@ function trackAssembly() {
         const response = Math.max(0, Number(args[1]) || 0);
         completions.set(this, { revision: generationRevision, key: generationKey, type: generationType,
             sequence: ++assemblySequence, size, response, budget: Math.max(0, size - response), error: '', counts: null,
-            categories: promptCategories(), historyCount: null, breakdown: null });
+            categories: promptCategories(), breakdown: null });
         return original.apply(this, args);
     });
     // 본체는 실패한 조립도 finally에서 전달하고, render(false)에서 error를 지운다.
@@ -94,7 +94,6 @@ function trackAssembly() {
                 result.counts = { ...this.tokenHandler.getCounts() };
                 const messages = args[0].getMessages();
                 result.breakdown = usageBreakdown(result.counts, result.categories, messages);
-                result.historyCount = includedHistoryCount(messages);
             }
             catch { result.error ||= '토큰 집계를 사용할 수 없습니다. SillyTavern 버전 호환성을 확인하세요.'; }
         }
@@ -157,15 +156,12 @@ function usageBreakdown(counts, categories, messages) {
     return breakdown;
 }
 
-function includedHistoryCount(messages) {
-    if (typeof messages?.flatten !== 'function') return null;
-    const identifiers = new Set();
-    for (const message of messages.flatten()) {
-        if (!message.content && !message.tool_calls) continue;
-        const match = /^(?:toolCall-)?chatHistory-(\d+)$/.exec(message.identifier);
-        if (match) identifiers.add(match[1]);
-    }
-    return identifiers.size;
+function visibleHistoryCount(ctx = context()) {
+    if (!hasChat(ctx) || !Array.isArray(ctx.chat)) return null;
+    // 원본 collect()의 숨김 판정을 유지한다. 토큰 예산으로 잘린 메시지도 개수에는 포함된다.
+    const chat = Array.isArray(ctx.chat) ? ctx.chat : [];
+    const visible = chat.filter(m => m && !m.is_system);
+    return visible.length;
 }
 
 function context() {
@@ -255,7 +251,8 @@ function render() {
         ? `${mode} ${percent}% 사용 · 추정 ${format(usage)} / ${format(displayBudget)} 토큰`
         : `${mode} 사용량`;
     setAttribute(button, 'aria-label', `${description}, 세부 내역 열기`);
-    const historyLabel = `챗 히스토리${current?.historyCount == null ? '' : `(${format(current.historyCount)}개)`}`;
+    const historyCount = visibleHistoryCount(ctx);
+    const historyLabel = `챗 히스토리${historyCount == null ? '' : `(${format(historyCount)}개)`}`;
     setText(panel.querySelector('[data-ctt-label="total"]'), settings.historyOnly ? historyLabel : '총 토큰');
     setText(panel.querySelector('[data-ctt-label="budget"]'), settings.historyOnly ? '히스토리 예산' : '입력 예산');
     panel.querySelector('[data-ctt-row="size"]').hidden = settings.historyOnly;
@@ -341,7 +338,7 @@ function capturePrompt(data, dryRun) {
     }
     // 실제 생성은 변경 전 입력도 표시하되, 새 드라이런 결과와 구분한다.
     const captured = result ?? limits(ctx);
-    snapshot = { key: chatKey(ctx), total, history, historyCount: result?.historyCount ?? null,
+    snapshot = { key: chatKey(ctx), total, history,
         breakdown: result?.breakdown ?? usageBreakdown(counts, result?.categories ?? promptCategories(ctx)),
         revision: result?.revision ?? generationRevision,
         size: captured.size, response: captured.response, budget: captured.budget,
