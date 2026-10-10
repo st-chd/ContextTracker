@@ -121,6 +121,7 @@
 #ctt-details dt { min-width: 0; overflow-wrap: anywhere; }
 #ctt-details dd { margin: 0; flex-shrink: 0; font-variant-numeric: tabular-nums; }
 #ctt-details .ctt-total { font-weight: 700; font-size: calc(var(--mainFontSize, 15px) * 13 / 15); }
+#ctt-details .ctt-history-count { font-size: calc(1em * 12 / 13); }
 #ctt-details .ctt-totals > .ctt-total { border-bottom: 1px solid var(--ctt-border); padding-bottom: 8px; margin-bottom: 5px; }
 #ctt-details .ctt-usage-details { border-top: 1px solid var(--ctt-border); padding-top: 8px; }
 #ctt-details .ctt-status { margin: 10px 0 0; opacity: .75; font-size: calc(var(--mainFontSize, 15px) * 11 / 15); }

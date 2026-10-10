@@ -252,8 +252,8 @@ function render() {
         : `${mode} 사용량`;
     setAttribute(button, 'aria-label', `${description}, 세부 내역 열기`);
     const historyCount = visibleHistoryCount(ctx);
-    const historyLabel = `챗 히스토리${historyCount > 0 ? `(${format(historyCount)}개)` : ''}`;
-    setText(panel.querySelector('[data-ctt-label="total"]'), settings.historyOnly ? historyLabel : '총 토큰');
+    setText(panel.querySelector('[data-ctt-label="total-name"]'), settings.historyOnly ? '챗 히스토리' : '총 토큰');
+    setText(panel.querySelector('.ctt-history-count'), settings.historyOnly && historyCount > 0 ? ` (${format(historyCount)}개)` : '');
     setText(panel.querySelector('[data-ctt-label="budget"]'), settings.historyOnly ? '히스토리 예산' : '입력 예산');
     panel.querySelector('[data-ctt-row="size"]').hidden = settings.historyOnly;
     panel.querySelector('[data-ctt-row="response"]').hidden = settings.historyOnly;
@@ -490,7 +490,7 @@ function buildUI() {
         <div class="ctt-headline"><strong id="ctt-details-title">컨텍스트 사용량</strong><span class="ctt-headline-sub"></span></div>
         <button type="button" class="ctt-close" aria-label="세부 패널 닫기">×</button></div>
         <dl class="ctt-totals">
-            <div class="ctt-total"><dt data-ctt-label="total">총 토큰</dt><dd data-ctt="total">—</dd></div>
+            <div class="ctt-total"><dt data-ctt-label="total"><span data-ctt-label="total-name">총 토큰</span><span class="ctt-history-count"></span></dt><dd data-ctt="total">—</dd></div>
             <div data-ctt-row="size"><dt>컨텍스트 크기</dt><dd data-ctt="size">—</dd></div>
             <div data-ctt-row="response"><dt>최대 응답 길이</dt><dd data-ctt="response">—</dd></div>
             <div data-ctt-row="inputBudget" hidden><dt>입력 예산</dt><dd data-ctt="inputBudget">—</dd></div>
