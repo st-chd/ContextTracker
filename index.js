@@ -255,7 +255,7 @@ function render() {
         ? `${mode} ${percent}% 사용 · 추정 ${format(usage)} / ${format(displayBudget)} 토큰`
         : `${mode} 사용량`;
     setAttribute(button, 'aria-label', `${description}, 세부 내역 열기`);
-    const historyLabel = `챗 히스토리(${current?.historyCount == null ? '—' : format(current.historyCount)}개)`;
+    const historyLabel = `챗 히스토리${current?.historyCount == null ? '' : `(${format(current.historyCount)}개)`}`;
     setText(panel.querySelector('[data-ctt-label="total"]'), settings.historyOnly ? historyLabel : '총 토큰');
     setText(panel.querySelector('[data-ctt-label="budget"]'), settings.historyOnly ? '히스토리 예산' : '입력 예산');
     panel.querySelector('[data-ctt-row="size"]').hidden = settings.historyOnly;
