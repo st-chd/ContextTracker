@@ -75,7 +75,7 @@ function trackAssembly() {
         const response = Math.max(0, Number(args[1]) || 0);
         completions.set(this, { revision: generationRevision, key: generationKey, type: generationType,
             sequence: ++assemblySequence, size, response, budget: Math.max(0, size - response), error: '', counts: null,
-            categories: promptCategories(), breakdown: null });
+            categories: promptCategories(), breakdown: null, historyVisibility: historyVisibility() });
         return original.apply(this, args);
     });
     // 본체는 실패한 조립도 finally에서 전달하고, render(false)에서 error를 지운다.
@@ -162,6 +162,22 @@ function visibleHistoryCount(ctx = context()) {
     const chat = Array.isArray(ctx.chat) ? ctx.chat : [];
     const visible = chat.filter(m => m && !m.is_system);
     return visible.length;
+}
+
+function historyVisibility(ctx = context()) {
+    return Array.isArray(ctx.chat) ? ctx.chat.map(message => message?.is_system ? '1' : '0').join('') : null;
+}
+
+function refreshHiddenHistory(ctx = context()) {
+    if (ctx.mainApi !== 'openai' || snapshot?.key !== chatKey(ctx) || snapshot.historyVisibility == null) return false;
+    const visibility = historyVisibility(ctx);
+    // 입력 조립 뒤 추가된 응답은 기존 메시지의 숨김 변경으로 보지 않는다.
+    if (visibility == null || visibility.startsWith(snapshot.historyVisibility)) return false;
+    // DOM에 없는 오래된 메시지도 패널을 열 때만 확인한다.
+    // 그룹은 드라이런을 지원하지 않으므로 마지막 생성 입력과 변경 안내를 유지한다.
+    if (ctx.groupId == null && !core?.isGenerating?.()) snapshot = null;
+    requestRefresh();
+    return true;
 }
 
 function context() {
@@ -338,7 +354,7 @@ function capturePrompt(data, dryRun) {
     }
     // 실제 생성은 변경 전 입력도 표시하되, 새 드라이런 결과와 구분한다.
     const captured = result ?? limits(ctx);
-    snapshot = { key: chatKey(ctx), total, history,
+    snapshot = { key: chatKey(ctx), total, history, historyVisibility: result?.historyVisibility ?? historyVisibility(ctx),
         breakdown: result?.breakdown ?? usageBreakdown(counts, result?.categories ?? promptCategories(ctx)),
         revision: result?.revision ?? generationRevision,
         size: captured.size, response: captured.response, budget: captured.budget,
@@ -506,8 +522,9 @@ function buildUI() {
         if (!panel.hidden) return closePanel();
         panel.hidden = false;
         button.setAttribute('aria-expanded', 'true');
+        const historyChanged = refreshHiddenHistory();
         render();
-        if (!refreshPending && (refreshError || snapshot?.key !== chatKey())) requestRefresh();
+        if (!historyChanged && !refreshPending && (refreshError || snapshot?.key !== chatKey())) requestRefresh();
         panel.querySelector('.ctt-close').focus();
     }, { signal: listeners.signal });
     panel.querySelector('.ctt-close').addEventListener('click', () => closePanel(true), { signal: listeners.signal });

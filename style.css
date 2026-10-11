@@ -84,9 +84,8 @@
     padding: 12px;
     border: 1px solid var(--ctt-border);
     border-radius: 10px;
-    background: var(--SmartThemeBlurTintColor, #242424);
-    -webkit-backdrop-filter: blur(calc(var(--SmartThemeBlurStrength, 10) * 1px));
-    backdrop-filter: blur(calc(var(--SmartThemeBlurStrength, 10) * 1px));
+    background-color: #242424;
+    background-color: rgb(from var(--SmartThemeBlurTintColor, #242424) r g b / 1);
     color: var(--ctt-text);
     box-shadow: 0 5px 5px #0005;
     font-family: var(--mainFontFamily, sans-serif);
