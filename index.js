@@ -122,7 +122,7 @@ function promptCategories(ctx = context()) {
         const category = names.length === 1 && names[0] === 'persona' ? 'persona'
             : names.length === 1 && names[0] === 'description' ? 'character'
                 : names.every(name => ['personality', 'scenario', 'mesexamples', 'mesexamplesraw'].includes(name))
-                    && new Set(names).size === names.length ? 'definitions' : null;
+                    ? 'definitions' : null;
         if (category) categories.set(prompt.identifier, category);
     }
     return categories;
