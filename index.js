@@ -1,4 +1,11 @@
 const MODULE = 'context_tracker';
+const USAGE_KEYS = ['prompts', 'worldInfoBefore', 'persona', 'character', 'definitions', 'worldInfoAfter', 'history'];
+const USAGE_ROWS = [
+    ['prompts', '프롬프트', ['prompts']],
+    ['worldInfo', '월드 인포', ['worldInfoBefore', 'worldInfoAfter']],
+    ['character', '캐릭터 시트', ['character', 'definitions', 'persona']],
+    ['history', '챗 히스토리', ['history']],
+];
 
 let settings;
 let badge;
@@ -69,7 +76,8 @@ function trackAssembly() {
         const size = Math.max(0, Number(args[0]) || 0);
         const response = Math.max(0, Number(args[1]) || 0);
         completions.set(this, { revision: generationRevision, key: generationKey, type: generationType,
-            sequence: ++assemblySequence, size, response, budget: Math.max(0, size - response), error: '', counts: null });
+            sequence: ++assemblySequence, size, response, budget: Math.max(0, size - response), error: '', counts: null,
+            categories: promptCategories(), breakdown: null, historyVisibility: historyVisibility() });
         return original.apply(this, args);
     });
     // 본체는 실패한 조립도 finally에서 전달하고, render(false)에서 error를 지운다.
@@ -84,7 +92,11 @@ function trackAssembly() {
         const value = original.apply(this, args);
         const result = completions.get(args[0]);
         if (result) {
-            try { result.counts = { ...this.tokenHandler.getCounts() }; }
+            try {
+                result.counts = { ...this.tokenHandler.getCounts() };
+                const messages = args[0].getMessages();
+                result.breakdown = usageBreakdown(result.counts, result.categories, messages);
+            }
             catch { result.error ||= '토큰 집계를 사용할 수 없습니다. SillyTavern 버전 호환성을 확인하세요.'; }
         }
         return value;
@@ -95,6 +107,81 @@ function trackAssembly() {
         if (result && Array.isArray(chat)) promptResults.set(chat, result);
         return chat;
     });
+}
+
+function promptCategories(ctx = context()) {
+    const categories = new Map();
+    for (const prompt of ctx.chatCompletionSettings?.prompts ?? []) {
+        const content = String(prompt.content ?? '');
+        const macros = [...content.matchAll(/\{\{([^{}]*)\}\}/g)];
+        if (!macros.length) continue;
+        const surrounding = content.replace(/\{\{([^{}]*)\}\}/g, '');
+        if (surrounding.includes('{{') || surrounding.includes('}}')) continue;
+        const names = macros.map(match => match[1].trim().toLowerCase()
+            .replace(/^char(description|personality|scenario)$/, '$1'));
+        const category = names.length === 1 && names[0] === 'persona' ? 'persona'
+            : names.length === 1 && names[0] === 'description' ? 'character'
+                : names.every(name => ['personality', 'scenario', 'mesexamples', 'mesexamplesraw'].includes(name))
+                    ? 'definitions' : null;
+        if (category) categories.set(prompt.identifier, category);
+    }
+    return categories;
+}
+
+function usageCategory(id, categories) {
+    if (id === 'chatHistory') return 'history';
+    if (id === 'worldInfoBefore' || id === 'worldInfoAfter') return id;
+    if (id === 'personaDescription') return 'persona';
+    if (id === 'charDescription') return 'character';
+    if (['charPersonality', 'scenario', 'dialogueExamples'].includes(id)) return 'definitions';
+    return categories.get(id) ?? 'prompts';
+}
+
+function usageBreakdown(counts, categories, messages) {
+    const breakdown = Object.fromEntries(USAGE_KEYS.map(key => [key, 0]));
+    const collections = messages?.getCollection?.() ?? [];
+    for (const [id, value] of Object.entries(counts)) {
+        const tokens = Number(value);
+        if (id === 'undefined' || !Number.isFinite(tokens) || tokens <= 0) continue;
+        const category = usageCategory(id, categories);
+        const collection = collections.find(item => item?.identifier === id);
+        // main 안에 삽입된 별도 프롬프트도 원래 식별자로 분류하고 중복 합산하지 않는다.
+        if (category === 'prompts' && collection?.flatten) {
+            let classified = 0;
+            for (const message of collection.flatten()) {
+                const amount = Number(message.getTokens());
+                if (!Number.isFinite(amount) || amount <= 0) continue;
+                breakdown[usageCategory(message.identifier, categories)] += amount;
+                classified += amount;
+            }
+            breakdown.prompts += tokens - classified;
+        } else breakdown[category] += tokens;
+    }
+    return breakdown;
+}
+
+function visibleHistoryCount(ctx = context()) {
+    if (!hasChat(ctx) || !Array.isArray(ctx.chat)) return null;
+    // 원본 collect()의 숨김 판정을 유지한다. 토큰 예산으로 잘린 메시지도 개수에는 포함된다.
+    const chat = Array.isArray(ctx.chat) ? ctx.chat : [];
+    const visible = chat.filter(m => m && !m.is_system);
+    return visible.length;
+}
+
+function historyVisibility(ctx = context()) {
+    return Array.isArray(ctx.chat) ? ctx.chat.map(message => message?.is_system ? '1' : '0').join('') : null;
+}
+
+function refreshHiddenHistory(ctx = context()) {
+    if (ctx.mainApi !== 'openai' || snapshot?.key !== chatKey(ctx) || snapshot.historyVisibility == null) return false;
+    const visibility = historyVisibility(ctx);
+    // 입력 조립 뒤 추가된 응답은 기존 메시지의 숨김 변경으로 보지 않는다.
+    if (visibility == null || visibility.startsWith(snapshot.historyVisibility)) return false;
+    // DOM에 없는 오래된 메시지도 패널을 열 때만 확인한다.
+    // 그룹은 추가 드라이런을 요청하지 않고 마지막 생성 입력을 유지한다.
+    if (ctx.groupId == null && !core?.isGenerating?.()) snapshot = null;
+    requestRefresh();
+    return true;
 }
 
 function context() {
@@ -184,13 +271,25 @@ function render() {
         ? `${mode} ${percent}% 사용 · 추정 ${format(usage)} / ${format(displayBudget)} 토큰`
         : `${mode} 사용량`;
     setAttribute(button, 'aria-label', `${description}, 세부 내역 열기`);
-    setText(panel.querySelector('[data-ctt-label="total"]'), settings.historyOnly ? '챗 히스토리' : '총 토큰');
+    const historyCount = visibleHistoryCount(ctx);
+    setText(panel.querySelector('[data-ctt-label="total-name"]'), settings.historyOnly ? '챗 히스토리' : '총 토큰');
+    setText(panel.querySelector('.ctt-history-count'), settings.historyOnly && historyCount > 0 ? ` (${format(historyCount)}개)` : '');
     setText(panel.querySelector('[data-ctt-label="budget"]'), settings.historyOnly ? '히스토리 예산' : '입력 예산');
+    panel.querySelector('[data-ctt-row="size"]').hidden = settings.historyOnly;
+    panel.querySelector('[data-ctt-row="response"]').hidden = settings.historyOnly;
+    panel.querySelector('[data-ctt-row="inputBudget"]').hidden = !settings.historyOnly;
+    panel.querySelector('.ctt-usage-details').hidden = !settings.showUsageDetails;
+    panel.querySelector('[data-ctt-usage-row="history"]').hidden = settings.historyOnly;
     setValue('total', usage);
     setValue('size', size);
     setValue('response', response);
     setValue('budget', displayBudget);
+    setValue('inputBudget', budget);
     setValue('remaining', measured ? Math.max(0, displayBudget - usage) : undefined);
+    for (const [key, , sources] of USAGE_ROWS) {
+        const value = current?.breakdown ? sources.reduce((sum, source) => sum + current.breakdown[source], 0) : undefined;
+        setValue(`usage-${key}`, value);
+    }
     setText(panel.querySelector('#ctt-details-title'), measured ? `${percent}% 사용` : `${mode} 사용량`);
     setText(panel.querySelector('.ctt-headline-sub'), measured ? `${format(usage)} / ${format(displayBudget)} 토큰` : '');
     const status = !supported
@@ -201,7 +300,7 @@ function render() {
                     : refreshPending ? '컨텍스트 계산 중…'
                         : !current ? (ctx.groupId != null ? '그룹 채팅은 메시지를 전송할 때 집계됩니다.' : '토큰 집계를 기다리는 중…')
                             : current.source === 'global' ? '추적되지 않은 집계입니다. 현재 입력과 다를 수 있습니다.'
-                                : current.revision !== revision && !current.dryRun ? '생성에 사용된 입력입니다. 변경 사항은 다음 집계에 반영됩니다.' : '';
+                                : ctx.groupId == null && current.revision !== revision && !current.dryRun ? '생성에 사용된 입력입니다. 변경 사항은 다음 집계에 반영됩니다.' : '';
     setText(panel.querySelector('.ctt-status'), status);
     if (!settings.enabled) closePanel();
     if (!panel.hidden) positionPanel();
@@ -263,7 +362,9 @@ function capturePrompt(data, dryRun) {
     }
     // 실제 생성은 변경 전 입력도 표시하되, 새 드라이런 결과와 구분한다.
     const captured = result ?? limits(ctx);
-    snapshot = { key: chatKey(ctx), total, history, revision: result?.revision ?? generationRevision,
+    snapshot = { key: chatKey(ctx), total, history, historyVisibility: result?.historyVisibility ?? historyVisibility(ctx),
+        breakdown: result?.breakdown ?? usageBreakdown(counts, result?.categories ?? promptCategories(ctx)),
+        revision: result?.revision ?? generationRevision,
         size: captured.size, response: captured.response, budget: captured.budget,
         sequence: result?.sequence ?? 0, dryRun: Boolean(dryRun), source: result?.counts != null ? 'assembly' : 'global' };
     refreshPending = false;
@@ -413,11 +514,15 @@ function buildUI() {
         <div class="ctt-headline"><strong id="ctt-details-title">컨텍스트 사용량</strong><span class="ctt-headline-sub"></span></div>
         <button type="button" class="ctt-close" aria-label="세부 패널 닫기">×</button></div>
         <dl class="ctt-totals">
-            <div class="ctt-total"><dt data-ctt-label="total">총 토큰</dt><dd data-ctt="total">—</dd></div>
-            <div><dt>컨텍스트 크기</dt><dd data-ctt="size">—</dd></div>
-            <div><dt>최대 응답 길이</dt><dd data-ctt="response">—</dd></div>
+            <div class="ctt-total"><dt data-ctt-label="total"><span data-ctt-label="total-name">총 토큰</span><span class="ctt-history-count"></span></dt><dd data-ctt="total">—</dd></div>
+            <div data-ctt-row="size"><dt>컨텍스트 크기</dt><dd data-ctt="size">—</dd></div>
+            <div data-ctt-row="response"><dt>최대 응답 길이</dt><dd data-ctt="response">—</dd></div>
+            <div data-ctt-row="inputBudget" hidden><dt>입력 예산</dt><dd data-ctt="inputBudget">—</dd></div>
             <div><dt data-ctt-label="budget">입력 예산</dt><dd data-ctt="budget">—</dd></div>
             <div><dt>잔여량</dt><dd data-ctt="remaining">—</dd></div>
+        </dl>
+        <dl class="ctt-usage-details" hidden>
+            ${USAGE_ROWS.map(([key, label]) => `<div data-ctt-usage-row="${key}"><dt>${label}</dt><dd data-ctt="usage-${key}">—</dd></div>`).join('')}
         </dl>
         <p class="ctt-status" role="status"></p>`;
     document.body.append(panel);
@@ -425,8 +530,9 @@ function buildUI() {
         if (!panel.hidden) return closePanel();
         panel.hidden = false;
         button.setAttribute('aria-expanded', 'true');
+        const historyChanged = refreshHiddenHistory();
         render();
-        if (!refreshPending && (refreshError || snapshot?.key !== chatKey())) requestRefresh();
+        if (!historyChanged && !refreshPending && (refreshError || snapshot?.key !== chatKey())) requestRefresh();
         panel.querySelector('.ctt-close').focus();
     }, { signal: listeners.signal });
     panel.querySelector('.ctt-close').addEventListener('click', () => closePanel(true), { signal: listeners.signal });
@@ -465,17 +571,27 @@ function addSettingsPanel() {
         <div class="inline-drawer-toggle inline-drawer-header"><b>Context Tracker</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
         <div class="inline-drawer-content"><label class="checkbox_label">
-            <input type="checkbox" id="ctt_enabled"><span>입력 컨텍스트 게이지 표시</span></label>
+            <input type="checkbox" id="ctt_enabled"><span>컨텍스트 트래커 표시</span></label>
             <label class="checkbox_label"><input type="checkbox" id="ctt_history_only"><span>챗 히스토리 예산으로 계산</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="ctt_usage_details"><span>사용량 상세보기</span></label>
             <label for="ctt_history_budget">챗 히스토리 상한선 (토큰)</label>
-            <input type="number" id="ctt_history_budget" class="text_pole" min="1" step="1" aria-describedby="ctt-history-limit ctt-history-notice">
-            <small id="ctt-history-limit" class="ctt-history-limit"></small>
-            <small id="ctt-history-notice" class="ctt-history-notice" role="status"></small>
+            <div class="ctt-history-budget-field">
+                <input type="number" id="ctt_history_budget" class="text_pole" min="1" step="1" aria-describedby="ctt-history-limit ctt-history-notice">
+                <small id="ctt-history-limit" class="ctt-history-limit"></small>
+                <small id="ctt-history-notice" class="ctt-history-notice" role="status"></small>
+            </div>
             <fieldset class="ctt-position-options"><legend>게이지 위치</legend>
                 ${[['top-left', '좌측 상단'], ['top-right', '우측 상단 (기본값)'], ['send-left', '입력 영역 좌측'], ['send-buttons', '입력 영역 우측']].map(([value, label]) => `<label class="checkbox_label"><input type="radio" name="ctt_position" value="${value}"><span>${label}</span></label>`).join('')}
             </fieldset>
         </div></div>`;
     target.append(container);
+    const usageDetails = container.querySelector('#ctt_usage_details');
+    usageDetails.checked = settings.showUsageDetails;
+    usageDetails.addEventListener('change', () => {
+        settings.showUsageDetails = usageDetails.checked;
+        context().saveSettingsDebounced();
+        render();
+    }, { signal: listeners.signal });
     const historyOnly = container.querySelector('#ctt_history_only');
     const historyInput = container.querySelector('#ctt_history_budget');
     historyOnly.checked = settings.historyOnly;
@@ -639,6 +755,7 @@ jQuery(async () => {
         settings = store[MODULE] ??= {};
         if (typeof settings.enabled !== 'boolean') settings.enabled = true;
         if (typeof settings.historyOnly !== 'boolean') settings.historyOnly = false;
+        if (typeof settings.showUsageDetails !== 'boolean') settings.showUsageDetails = false;
         settings.historyBudget = historyBudget(settings.historyBudget, 0);
         if (!['top-left', 'top-right', 'send-left', 'send-buttons'].includes(settings.position)) settings.position = 'top-right';
         active = true;
