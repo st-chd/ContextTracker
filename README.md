@@ -24,7 +24,7 @@ https://github.com/st-chd/ContextTracker
 
 ## 크레딧 및 라이선스
 
-이 확장은 [Wanichka의 Context Tracker](https://github.com/Wanichka/sillytavern-context-tracker)를 포크하여 수정했으며, 모든 수정에는 GPT(codex)를 사용했습니다.\
+이 확장은 [Wanichka의 Context Tracker](https://github.com/Wanichka/sillytavern-context-tracker)를 포크하여 수정했으며, 모든 수정에는 GPT(codex)와 Claude를 사용했습니다.\
 원본 확장의 MIT 라이선스를 따르며, 자세한 내용은 [LICENSE](LICENSE) 파일을 확인해 주세요.
 
 **호환성을 위해 참고한 확장 프로그램**\
