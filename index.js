@@ -6,6 +6,11 @@ const USAGE_ROWS = [
     ['character', '캐릭터 시트', ['character', 'definitions', 'persona']],
     ['history', '챗 히스토리', ['history']],
 ];
+// 커스텀 프롬프트에서 다른 문구와 섞여도 분리할 시트 매크로와 그 분류.
+const SHEET_MACROS = {
+    description: 'character', persona: 'persona', personality: 'definitions',
+    scenario: 'definitions', mesExamples: 'definitions', mesExamplesRaw: 'definitions',
+};
 
 let settings;
 let badge;
@@ -77,7 +82,7 @@ function trackAssembly() {
         const response = Math.max(0, Number(args[1]) || 0);
         completions.set(this, { revision: generationRevision, key: generationKey, type: generationType,
             sequence: ++assemblySequence, size, response, budget: Math.max(0, size - response), error: '', counts: null,
-            categories: promptCategories(), breakdown: null, historyVisibility: historyVisibility() });
+            categories: promptCategories(), sheets: promptSheets(), breakdown: null, historyVisibility: historyVisibility() });
         return original.apply(this, args);
     });
     // 본체는 실패한 조립도 finally에서 전달하고, render(false)에서 error를 지운다.
@@ -96,6 +101,7 @@ function trackAssembly() {
                 result.counts = { ...this.tokenHandler.getCounts() };
                 const messages = args[0].getMessages();
                 result.breakdown = usageBreakdown(result.counts, result.categories, messages);
+                splitSheets(result, messages);
             }
             catch { result.error ||= '토큰 집계를 사용할 수 없습니다. SillyTavern 버전 호환성을 확인하세요.'; }
         }
@@ -115,10 +121,9 @@ function promptCategories(ctx = context()) {
         const content = String(prompt.content ?? '');
         const macros = [...content.matchAll(/\{\{([^{}]*)\}\}/g)];
         if (!macros.length) continue;
-        const surrounding = content.replace(/\{\{([^{}]*)\}\}/g, '');
-        if (surrounding.includes('{{') || surrounding.includes('}}')) continue;
-        const names = macros.map(match => match[1].trim().toLowerCase()
-            .replace(/^char(description|personality|scenario)$/, '$1'));
+        // 매크로와 공백만 있는 프롬프트만 통째로 분류한다. 문구가 섞이면 splitSheets가 값만 옮긴다.
+        if (content.replace(/\{\{([^{}]*)\}\}/g, '').trim()) continue;
+        const names = macros.map(match => macroName(match[1]));
         const category = names.length === 1 && names[0] === 'persona' ? 'persona'
             : names.length === 1 && names[0] === 'description' ? 'character'
                 : names.every(name => ['personality', 'scenario', 'mesexamples', 'mesexamplesraw'].includes(name))
@@ -126,6 +131,84 @@ function promptCategories(ctx = context()) {
         if (category) categories.set(prompt.identifier, category);
     }
     return categories;
+}
+
+function macroName(name) {
+    return name.trim().toLowerCase().replace(/^char(description|personality|scenario)$/, '$1');
+}
+
+function promptSheets(ctx = context()) {
+    const sheets = new Map();
+    for (const prompt of ctx.chatCompletionSettings?.prompts ?? []) {
+        const macros = new Map();
+        for (const match of String(prompt.content ?? '').matchAll(/\{\{([^{}]*)\}\}/g)) {
+            const name = Object.keys(SHEET_MACROS).find(key => key.toLowerCase() === macroName(match[1]));
+            if (name) macros.set(name, (macros.get(name) ?? 0) + 1);
+        }
+        if (macros.size) sheets.set(prompt.identifier, macros);
+    }
+    return sheets;
+}
+
+function countSheetValue(content, value, limit) {
+    // 매크로 횟수까지만 세어 짧은 값이 문구 속 같은 글자로 더 집계되지 않게 한다.
+    let count = 0;
+    for (let index = content.indexOf(value); index >= 0 && count < limit; index = content.indexOf(value, index + value.length)) count++;
+    return count;
+}
+
+// 시트 매크로가 다른 문구와 섞인 프롬프트는 매크로 값의 토큰만큼 시트로 옮긴다.
+// 값은 설명란 토큰 카운터와 같은 getTokenCountAsync로 세어 본체 표시값과 맞추고 그 캐시를 함께 쓴다.
+function splitSheets(result, messages, ctx = context()) {
+    if (!result.sheets?.size || typeof ctx.substituteParams !== 'function' || typeof ctx.getTokenCountAsync !== 'function') return;
+    const values = new Map();
+    // 매크로 값과 메시지 내용은 조립 중에 읽어 이후 병합이나 발화자 변경의 영향을 받지 않는다.
+    const valueOf = name => {
+        if (!values.has(name)) values.set(name, String(ctx.substituteParams(`{{${name}}}`) ?? ''));
+        return values.get(name);
+    };
+    const targets = [];
+    for (const collection of messages?.getCollection?.() ?? []) {
+        if (!(Number(result.counts?.[collection?.identifier]) > 0) || !collection.flatten
+            || usageCategory(collection.identifier, result.categories) !== 'prompts') continue;
+        for (const message of collection.flatten()) {
+            const macros = result.sheets.get(message.identifier);
+            const tokens = Number(message.getTokens());
+            if (!macros || usageCategory(message.identifier, result.categories) !== 'prompts'
+                || typeof message.content !== 'string' || !Number.isFinite(tokens) || tokens <= 0) continue;
+            const parts = [];
+            for (const [name, limit] of macros) {
+                const value = valueOf(name);
+                const count = value ? countSheetValue(message.content, value, limit) : 0;
+                if (count) parts.push([SHEET_MACROS[name], value, count]);
+            }
+            if (parts.length) targets.push({ tokens, parts });
+        }
+    }
+    if (!targets.length) return;
+    const breakdown = result.breakdown;
+    (async () => {
+        const moves = Object.fromEntries(USAGE_KEYS.map(key => [key, 0]));
+        for (const { tokens, parts } of targets) {
+            let left = tokens;
+            for (const [category, value, count] of parts) {
+                const amount = Math.min(left, Number(await ctx.getTokenCountAsync(value)) * count);
+                if (!(amount > 0)) continue;
+                moves[category] += amount;
+                moves.prompts -= amount;
+                left -= amount;
+            }
+        }
+        return moves;
+    })().then(moves => {
+        if (!active || result.breakdown !== breakdown) return;
+        result.breakdown = Object.fromEntries(USAGE_KEYS.map(key => [key, breakdown[key] + moves[key]]));
+        // 이미 표시 중인 같은 조립 결과만 갱신하고, 아직 수집 전이면 capturePrompt가 새 값을 읽는다.
+        if (snapshot?.breakdown === breakdown) {
+            snapshot.breakdown = result.breakdown;
+            render();
+        }
+    }, () => {});
 }
 
 function usageCategory(id, categories) {
