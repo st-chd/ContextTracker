@@ -11,6 +11,9 @@ const SHEET_MACROS = {
     description: 'character', persona: 'persona', personality: 'definitions',
     scenario: 'definitions', mesExamples: 'definitions', mesExamplesRaw: 'definitions',
 };
+const GAUGE_MIN = 16;
+const GAUGE_MAX = 40;
+const GAUGE_DEFAULT = 28;
 
 let settings;
 let badge;
@@ -303,7 +306,7 @@ function syncHistorySettings(budget, notice, ctx = context()) {
     input.disabled = !settings.historyOnly || ctx.mainApi !== 'openai' || budget < 1;
     // 다른 설정이 갱신될 때 작성 중인 숫자를 덮어쓰지 않는다.
     if (document.activeElement !== input || notice !== undefined) input.value = String(settings.historyBudget);
-    let hint = `현재 입력 예산: ${format(budget)} 토큰 (상한선은 이 값을 넘을 수 없습니다.)`;
+    let hint = `현재 입력 예산 ${format(budget)} 토큰 이하`;
     if (ctx.mainApi !== 'openai') hint = '히스토리 예산은 Chat Completion에서 사용할 수 있습니다.';
     else if (budget < 1) hint = '컨텍스트 크기를 최대 응답 길이보다 크게 설정하세요.';
     else if (effective < settings.historyBudget) {
@@ -547,6 +550,15 @@ function queueLayout() {
     });
 }
 
+function gaugeSize(value) {
+    const size = Math.round(Number(value));
+    return Number.isFinite(size) ? Math.min(GAUGE_MAX, Math.max(GAUGE_MIN, size)) : GAUGE_DEFAULT;
+}
+
+function applySize() {
+    badge?.style.setProperty('--ctt-size', `${settings.size}px`);
+}
+
 function mountBadge() {
     if (!settings.enabled) return;
     const form = document.getElementById('send_form');
@@ -588,6 +600,7 @@ function buildUI() {
         </svg>
     </button>`;
     button = badge.querySelector('button');
+    applySize();
     panel = document.createElement('section');
     panel.id = 'ctt-details';
     panel.hidden = true;
@@ -653,19 +666,29 @@ function addSettingsPanel() {
     container.innerHTML = `<div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header"><b>Context Tracker</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
-        <div class="inline-drawer-content"><label class="checkbox_label">
-            <input type="checkbox" id="ctt_enabled"><span>컨텍스트 트래커 표시</span></label>
-            <label class="checkbox_label"><input type="checkbox" id="ctt_history_only"><span>챗 히스토리 예산으로 계산</span></label>
+        <div class="inline-drawer-content"><div class="ctt-section">옵션 설정</div>
+            <label class="checkbox_label"><input type="checkbox" id="ctt_enabled"><span>컨텍스트 트래커 표시</span></label>
             <label class="checkbox_label"><input type="checkbox" id="ctt_usage_details"><span>사용량 상세보기</span></label>
-            <label for="ctt_history_budget">챗 히스토리 상한선 (토큰)</label>
+            <label class="checkbox_label"><input type="checkbox" id="ctt_history_only"><span>챗 히스토리 예산으로 계산</span></label>
             <div class="ctt-history-budget-field">
-                <input type="number" id="ctt_history_budget" class="text_pole" min="1" step="1" aria-describedby="ctt-history-limit ctt-history-notice">
+                <input type="number" id="ctt_history_budget" class="text_pole" min="1" step="1" aria-label="챗 히스토리 상한선 (토큰)" aria-describedby="ctt-history-limit ctt-history-notice">
                 <small id="ctt-history-limit" class="ctt-history-limit"></small>
                 <small id="ctt-history-notice" class="ctt-history-notice" role="status"></small>
             </div>
-            <fieldset class="ctt-position-options"><legend>게이지 위치</legend>
-                ${[['top-left', '좌측 상단'], ['top-right', '우측 상단 (기본값)'], ['send-left', '입력 영역 좌측'], ['send-buttons', '입력 영역 우측']].map(([value, label]) => `<label class="checkbox_label"><input type="radio" name="ctt_position" value="${value}"><span>${label}</span></label>`).join('')}
-            </fieldset>
+            <div class="ctt-section">게이지 설정</div>
+            <div class="ctt-row">
+                <label for="ctt_size" class="ctt-row-label">크기</label>
+                <div class="ctt-size-field">
+                    <input type="range" id="ctt_size" min="${GAUGE_MIN}" max="${GAUGE_MAX}" step="1" aria-label="게이지 크기">
+                    <input type="number" id="ctt_size_value" min="${GAUGE_MIN}" max="${GAUGE_MAX}" step="1" inputmode="numeric" aria-label="게이지 크기 (px)"><span>px</span>
+                </div>
+            </div>
+            <div class="ctt-row" role="radiogroup" aria-label="게이지 위치">
+                <span class="ctt-row-label">위치</span>
+                <div class="ctt-position-options">
+                ${[['top-left', '좌측 상단'], ['top-right', '우측 상단'], ['send-left', '입력 좌측'], ['send-buttons', '입력 우측']].map(([value, label]) => `<label class="checkbox_label"><input type="radio" name="ctt_position" value="${value}"><span>${label}</span></label>`).join('')}
+                </div>
+            </div>
         </div></div>`;
     target.append(container);
     const usageDetails = container.querySelector('#ctt_usage_details');
@@ -724,6 +747,42 @@ function addSettingsPanel() {
         observe();
         render();
         if (settings.enabled) requestRefresh();
+    }, { signal: listeners.signal });
+    const sizeRange = container.querySelector('#ctt_size');
+    const sizeInput = container.querySelector('#ctt_size_value');
+    const showSize = () => {
+        sizeRange.value = String(settings.size);
+        sizeRange.style.setProperty('--ctt-fill', `${(settings.size - GAUGE_MIN) / (GAUGE_MAX - GAUGE_MIN) * 100}%`);
+        if (document.activeElement !== sizeInput) sizeInput.value = String(settings.size);
+    };
+    const setSize = value => {
+        const size = gaugeSize(value);
+        if (size !== settings.size) {
+            settings.size = size;
+            context().saveSettingsDebounced();
+            applySize();
+            queueLayout();
+        }
+        showSize();
+    };
+    showSize();
+    sizeRange.addEventListener('input', () => {
+        sizeInput.value = sizeRange.value;
+        setSize(sizeRange.value);
+    }, { signal: listeners.signal });
+    sizeInput.addEventListener('input', () => {
+        // 입력 중에는 범위 안의 값일 때만 즉시 반영하고, 확정 시 범위 밖 값을 보정한다.
+        const value = Number(sizeInput.value);
+        if (sizeInput.value !== '' && value >= GAUGE_MIN && value <= GAUGE_MAX) setSize(value);
+    }, { signal: listeners.signal });
+    const commitSize = () => {
+        setSize(sizeInput.value === '' ? settings.size : sizeInput.value);
+        sizeInput.value = String(settings.size);
+    };
+    sizeInput.addEventListener('change', commitSize, { signal: listeners.signal });
+    sizeInput.addEventListener('blur', commitSize, { signal: listeners.signal });
+    sizeInput.addEventListener('keydown', event => {
+        if (event.key === 'Enter') sizeInput.blur();
     }, { signal: listeners.signal });
     for (const radio of container.querySelectorAll('[name="ctt_position"]')) {
         radio.checked = radio.value === settings.position;
@@ -841,6 +900,7 @@ jQuery(async () => {
         if (typeof settings.showUsageDetails !== 'boolean') settings.showUsageDetails = false;
         settings.historyBudget = historyBudget(settings.historyBudget, 0);
         if (!['top-left', 'top-right', 'send-left', 'send-buttons'].includes(settings.position)) settings.position = 'top-right';
+        settings.size = gaugeSize(settings.size);
         active = true;
         const importError = await loadInternals();
         if (!active) return;
