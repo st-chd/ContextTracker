@@ -31,6 +31,9 @@ let generationType;
 let generationRevision = 0;
 let refreshTimer;
 let pendingTimeout;
+let assemblyPending = false;
+let assemblyDeferred = false;
+let assemblyTimer;
 let layoutFrame;
 let layoutObserver;
 let chatObserver;
@@ -80,12 +83,16 @@ function trackAssembly() {
         });
     };
     wrap(prototype, 'setTokenBudget', function (original, args) {
-        if (!active || !settings.enabled) return original.apply(this, args);
-        const size = Math.max(0, Number(args[0]) || 0);
-        const response = Math.max(0, Number(args[1]) || 0);
-        completions.set(this, { revision: generationRevision, key: generationKey, type: generationType,
-            sequence: ++assemblySequence, size, response, budget: Math.max(0, size - response), error: '', counts: null,
-            categories: promptCategories(), sheets: promptSheets(), breakdown: null, historyVisibility: historyVisibility() });
+        // 본체 try 밖에서 호출되므로 집계 준비가 실패해도 생성은 막지 않는다.
+        try {
+            const size = Math.max(0, Number(args[0]) || 0);
+            const response = Math.max(0, Number(args[1]) || 0);
+            completions.set(this, { revision: generationRevision, key: generationKey, type: generationType,
+                sequence: ++assemblySequence, size, response, budget: Math.max(0, size - response), error: '', counts: null,
+                categories: promptCategories(), sheets: promptSheets(), breakdown: null, historyVisibility: historyVisibility() });
+        } catch (error) {
+            console.warn('[ContextTracker] 조립 추적 실패', error);
+        }
         return original.apply(this, args);
     });
     // 본체는 실패한 조립도 finally에서 전달하고, render(false)에서 error를 지운다.
@@ -103,6 +110,11 @@ function trackAssembly() {
             try {
                 result.counts = { ...this.tokenHandler.getCounts() };
                 const messages = args[0].getMessages();
+                // 동시 생성에서 전역 generationType이 덮일 수 있어 조립된 제어 프롬프트로 종류를 확정한다.
+                const control = messages.getCollection?.().find(item => item?.identifier === 'controlPrompts');
+                const ids = control?.flatten?.().map(message => message.identifier) ?? [];
+                if (ids.includes('quietPrompt')) result.type = 'quiet';
+                else if (ids.includes('impersonate')) result.type = 'impersonate';
                 result.breakdown = usageBreakdown(result.counts, result.categories, messages);
                 splitSheets(result, messages);
             }
@@ -249,9 +261,7 @@ function usageBreakdown(counts, categories, messages) {
 function visibleHistoryCount(ctx = context()) {
     if (!hasChat(ctx) || !Array.isArray(ctx.chat)) return null;
     // 원본 collect()의 숨김 판정을 유지한다. 토큰 예산으로 잘린 메시지도 개수에는 포함된다.
-    const chat = Array.isArray(ctx.chat) ? ctx.chat : [];
-    const visible = chat.filter(m => m && !m.is_system);
-    return visible.length;
+    return ctx.chat.filter(m => m && !m.is_system).length;
 }
 
 function historyVisibility(ctx = context()) {
@@ -262,10 +272,15 @@ function refreshHiddenHistory(ctx = context()) {
     if (ctx.mainApi !== 'openai' || snapshot?.key !== chatKey(ctx) || snapshot.historyVisibility == null) return false;
     const visibility = historyVisibility(ctx);
     // 입력 조립 뒤 추가된 응답은 기존 메시지의 숨김 변경으로 보지 않는다.
-    if (visibility == null || visibility.startsWith(snapshot.historyVisibility)) return false;
+    if (visibility == null || visibility.startsWith(snapshot.historyVisibility)) {
+        // 그룹에서 숨김을 되돌리면 마지막 입력과 다시 같아진다.
+        if (ctx.groupId != null) snapshot.stale = false;
+        return false;
+    }
     // DOM에 없는 오래된 메시지도 패널을 열 때만 확인한다.
-    // 그룹은 추가 드라이런을 요청하지 않고 마지막 생성 입력을 유지한다.
-    if (ctx.groupId == null && !core?.isGenerating?.()) snapshot = null;
+    // 그룹은 추가 드라이런을 요청하지 않고 마지막 생성 입력을 유지하되, 다음 집계에 반영된다고 표시한다.
+    if (ctx.groupId != null) snapshot.stale = true;
+    else if (!core?.isGenerating?.()) snapshot = null;
     requestRefresh();
     return true;
 }
@@ -386,7 +401,8 @@ function render() {
                     : refreshPending ? '컨텍스트 계산 중…'
                         : !current ? (ctx.groupId != null ? '그룹 채팅은 메시지를 전송할 때 집계됩니다.' : '토큰 집계를 기다리는 중…')
                             : current.source === 'global' ? '추적되지 않은 집계입니다. 현재 입력과 다를 수 있습니다.'
-                                : ctx.groupId == null && current.revision !== revision && !current.dryRun ? '생성에 사용된 입력입니다. 변경 사항은 다음 집계에 반영됩니다.' : '';
+                                : (ctx.groupId == null ? current.revision !== revision && !current.dryRun : current.stale)
+                                    ? '생성에 사용된 입력입니다. 변경 사항은 다음 집계에 반영됩니다.' : '';
     setText(panel.querySelector('.ctt-status'), status);
     if (!settings.enabled) closePanel();
     if (!panel.hidden) positionPanel();
@@ -405,9 +421,19 @@ function countingUnavailable(error) {
     render();
 }
 
+function finishAssembly() {
+    const deferred = assemblyDeferred;
+    clearTimeout(assemblyTimer);
+    assemblyTimer = undefined;
+    assemblyPending = false;
+    assemblyDeferred = false;
+    return deferred;
+}
+
 function capturePrompt(data, dryRun) {
     const ctx = context();
     const result = promptResults.get(data?.prompt);
+    if (!dryRun && assemblyPending && !['quiet', 'impersonate'].includes(result?.type ?? generationType)) finishAssembly();
     // 보조 확장의 원시 요청은 이 이벤트를 거치지 않아 현재 대화 집계를 덮어쓰지 않는다.
     if (!active || trackingFailed || !settings.enabled || ctx.mainApi !== 'openai' || !hasChat(ctx)
         || !Array.isArray(data?.prompt) || (result?.key ?? generationKey) !== chatKey(ctx)
@@ -466,6 +492,12 @@ function requestRefresh() {
     const ctx = context();
     syncHistorySettings(undefined, undefined, ctx);
     if (!settings.enabled) return;
+    if (assemblyPending) {
+        // 조립 전 변경(보낸 메시지, 재생성 삭제)은 이번 생성 입력에 포함되므로 대기 표시를 유지한다.
+        generationRevision = ++revision;
+        assemblyDeferred = true;
+        return;
+    }
     revision++;
     if (trackingFailed || !internalsAvailable()) {
         countingUnavailable(new Error('SillyTavern token APIs unavailable'));
@@ -525,7 +557,8 @@ function positionPanel() {
         const availableHeight = placeAbove ? aboveSpace : belowSpace;
         panel.style.maxHeight = `${availableHeight}px`;
     } else {
-        panel.style.maxHeight = `${Math.max(0, bottomEdge - topEdge)}px`;
+        // 어느 쪽에도 다 들어가지 않으면 넓은 쪽에 맞추고 패널 안에서 스크롤해 게이지를 가리지 않는다.
+        panel.style.maxHeight = `${Math.max(aboveSpace, belowSpace)}px`;
     }
     const { width, height } = panel.getBoundingClientRect();
     const above = rect.top - height - 8;
@@ -557,6 +590,13 @@ function gaugeSize(value) {
 
 function applySize() {
     badge?.style.setProperty('--ctt-size', `${settings.size}px`);
+    // 상단 배치 여백은 #send_form에서 계산하므로 같은 크기를 넘긴다.
+    if (settings.enabled) toolbarHost?.style.setProperty('--ctt-size', `${settings.size}px`);
+}
+
+function releaseHost(host) {
+    host?.removeAttribute('data-ctt-position');
+    host?.style.removeProperty('--ctt-size');
 }
 
 function mountBadge() {
@@ -567,9 +607,10 @@ function mountBadge() {
     const host = settings.position === 'send-left' ? input?.querySelector('#leftSendForm')
         : settings.position === 'send-buttons' ? input?.querySelector('#rightSendForm') : form;
     if (!host) return;
-    if (toolbarHost && toolbarHost !== form) toolbarHost.removeAttribute('data-ctt-position');
+    if (toolbarHost && toolbarHost !== form) releaseHost(toolbarHost);
     toolbarHost = form;
     if (form.dataset.cttPosition !== settings.position) form.dataset.cttPosition = settings.position;
+    if (form.style.getPropertyValue('--ctt-size') !== `${settings.size}px`) form.style.setProperty('--ctt-size', `${settings.size}px`);
     if (badge.dataset.position !== settings.position) badge.dataset.position = settings.position;
     if (badge.parentElement !== host) host.prepend(badge);
 }
@@ -651,7 +692,9 @@ function buildUI() {
         if (!panel.hidden && !panel.contains(event.target)) queueLayout();
     }, { capture: true, passive: true, signal: listeners.signal });
     layoutObserver = new MutationObserver(queueLayout);
-    chatObserver = new MutationObserver(requestRefresh);
+    chatObserver = new MutationObserver(() => {
+        if (context().groupId == null || !refreshHiddenHistory()) requestRefresh();
+    });
     resizeObserver = new ResizeObserver(queueLayout);
     mountBadge();
     observe();
@@ -732,6 +775,7 @@ function addSettingsPanel() {
         settings.enabled = enabled.checked;
         context().saveSettingsDebounced();
         if (!settings.enabled) {
+            finishAssembly();
             revision++;
             clearTimeout(refreshTimer);
             refreshTimer = undefined;
@@ -739,7 +783,7 @@ function addSettingsPanel() {
             refreshPending = false;
             refreshError = '';
             closePanel();
-            toolbarHost?.removeAttribute('data-ctt-position');
+            releaseHost(toolbarHost);
         } else {
             mountBadge();
             snapshot = null;
@@ -808,27 +852,44 @@ function bind(name, handler) {
 }
 
 function bindEvents() {
-    bind('GENERATION_STARTED', (type, options, dryRun) => {
+    bind('GENERATION_STARTED', (type) => {
         generationKey = chatKey();
         generationRevision = revision;
         generationType = type;
-        if (!trackingFailed && settings.enabled && context().mainApi === 'openai' && hasChat() && !dryRun && !['quiet', 'impersonate'].includes(type)) {
-            clearTimeout(refreshTimer);
-            refreshTimer = undefined;
-            clearTimeout(pendingTimeout);
-            refreshError = '';
-            refreshPending = true;
+    });
+    // 슬래시 명령만 실행하고 끝나는 전송은 이 이벤트가 오지 않으므로 대기 표시도 여기서 시작한다.
+    bind('GENERATION_AFTER_COMMANDS', (type, options, dryRun) => {
+        if (dryRun || trackingFailed || !settings.enabled || context().mainApi !== 'openai' || !hasChat()
+            || ['quiet', 'impersonate'].includes(type)) return;
+        generationRevision = revision;
+        clearTimeout(refreshTimer);
+        refreshTimer = undefined;
+        clearTimeout(pendingTimeout);
+        refreshError = '';
+        refreshPending = true;
+        render();
+        // 프롬프트 조립 전에 생성이 실패해도 '계산 중' 상태가 남지 않게 한다.
+        pendingTimeout = setTimeout(() => {
+            if (!active || !refreshPending) return;
+            refreshPending = false;
             render();
-            // 프롬프트 조립 전에 생성이 실패해도 '계산 중' 상태가 남지 않게 한다.
-            pendingTimeout = setTimeout(() => {
-                if (!active || !refreshPending) return;
-                refreshPending = false;
-                render();
-            }, 15000);
-        }
+        }, 15000);
+        assemblyPending = true;
+        assemblyDeferred = false;
+        clearTimeout(assemblyTimer);
+        // 조립 전에 생성이 중단되어 종료 이벤트가 오지 않는 경우를 대비한다.
+        assemblyTimer = setTimeout(() => {
+            if (finishAssembly() && active) requestRefresh();
+        }, 15000);
     });
     bind('GENERATE_AFTER_DATA', capturePrompt);
+    const generationEnded = () => {
+        finishAssembly();
+        requestRefresh();
+    };
+    for (const name of ['GENERATION_ENDED', 'GENERATION_STOPPED']) bind(name, generationEnded);
     const reset = () => {
+        finishAssembly();
         snapshot = null;
         refreshError = '';
         generationKey = '';
@@ -841,8 +902,7 @@ function bindEvents() {
     for (const name of [
         'APP_READY', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_UPDATED',
         'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'MESSAGE_FILE_EMBEDDED',
-        'MESSAGE_REASONING_EDITED', 'MESSAGE_REASONING_DELETED', 'GENERATION_ENDED', 'GENERATION_STOPPED',
-        'GROUP_WRAPPER_FINISHED', 'CHATCOMPLETION_MODEL_CHANGED', 'CHATCOMPLETION_SOURCE_CHANGED',
+        'MESSAGE_REASONING_EDITED', 'MESSAGE_REASONING_DELETED', 'GROUP_WRAPPER_FINISHED', 'CHATCOMPLETION_MODEL_CHANGED', 'CHATCOMPLETION_SOURCE_CHANGED',
         'OAI_PRESET_CHANGED_AFTER', 'WORLDINFO_SETTINGS_UPDATED', 'WORLDINFO_UPDATED',
         'CHARACTER_EDITED', 'PERSONA_CHANGED', 'PERSONA_UPDATED', 'CONNECTION_PROFILE_LOADED',
     ]) bind(name, requestRefresh);
@@ -859,6 +919,7 @@ function dispose() {
     active = false;
     clearTimeout(refreshTimer);
     clearTimeout(pendingTimeout);
+    clearTimeout(assemblyTimer);
     cancelAnimationFrame(layoutFrame);
     layoutObserver?.disconnect();
     chatObserver?.disconnect();
@@ -868,7 +929,7 @@ function dispose() {
         try { source.removeListener?.(event, handler); }
         catch (error) { console.warn('[ContextTracker] 이벤트 해제 실패', error); }
     }
-    toolbarHost?.removeAttribute('data-ctt-position');
+    releaseHost(toolbarHost);
     for (const restore of restorers.splice(0).reverse()) {
         try { restore(); }
         catch (error) { console.warn('[ContextTracker] 추적 API 복원 실패', error); }
@@ -882,6 +943,11 @@ function dispose() {
 export function onDelete() {
     removed = true;
     dispose();
+}
+
+// 본체는 비활성화 직후가 아니라 확장 관리자를 닫을 때 새로고침하므로 그 전에 정리한다.
+export function onDisable() {
+    onDelete();
 }
 
 export function onClean() {

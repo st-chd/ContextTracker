@@ -42,7 +42,8 @@
 
 #send_form:is([data-ctt-position="top-left"], [data-ctt-position="top-right"]) {
     position: relative;
-    --ctt-gap: calc(max(32px, calc(var(--ctt-size, 28px) + 4px)) + 4px);
+    /* 게이지가 top: 8px에 놓이므로 그만큼 더 비운다. */
+    --ctt-gap: calc(max(32px, calc(var(--ctt-size, 28px) + 4px)) + 8px);
 }
 #send_form > #ctx-tracker-badge {
     position: absolute;
