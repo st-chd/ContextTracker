@@ -6,14 +6,14 @@
 ### 표시 방식
 | 입력 예산 표시 | 챗 히스토리 표시 |
 |:---:|:---:|
-| <img src="https://raw.githubusercontent.com/st-chd/chd-asset/main/Asset-ContextTracker/Budget.png" width="300"> | <img src="https://raw.githubusercontent.com/st-chd/chd-asset/main/Asset-ContextTracker/History.png" width="300"> |
+| <img src="https://raw.githubusercontent.com/st-chd/chd-asset/main/Asset/ContextTracker-Budget.png" width="300"> | <img src="https://raw.githubusercontent.com/st-chd/chd-asset/main/Asset/ContextTracker-History.png" width="300"> |
 
 ### 배치 영역
 | 입력 영역 좌측 | 입력 영역 우측 |
 |:---:|:---:|
-| <img src="https://raw.githubusercontent.com/st-chd/chd-asset/main/Asset-ContextTracker/leftSendForm.png" width="300"> | <img src="https://raw.githubusercontent.com/st-chd/chd-asset/main/Asset-ContextTracker/rightSendForm.png" width="300"> |
+| <img src="https://raw.githubusercontent.com/st-chd/chd-asset/main/Asset/ContextTracker-leftSendForm.png" width="300"> | <img src="https://raw.githubusercontent.com/st-chd/chd-asset/main/Asset/ContextTracker-rightSendForm.png" width="300"> |
 | **좌측 상단** | **우측 상단** |
-| <img src="https://raw.githubusercontent.com/st-chd/chd-asset/main/Asset-ContextTracker/sendformLeft.png" width="300"> | <img src="https://raw.githubusercontent.com/st-chd/chd-asset/main/Asset-ContextTracker/sendformRight.png" width="300"> |
+| <img src="https://raw.githubusercontent.com/st-chd/chd-asset/main/Asset/ContextTracker-sendformLeft.png" width="300"> | <img src="https://raw.githubusercontent.com/st-chd/chd-asset/main/Asset/ContextTracker-sendformRight.png" width="300"> |
 
 ## 설치
 
